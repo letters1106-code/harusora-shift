@@ -142,12 +142,13 @@
   <div class="card" id="settings">
     <h2>⚙️ スタッフ・条件設定</h2>
 
-    <h3>1コマの必要人数（正社員＋バイトの合計）</h3>
+    <h3>必要人数（正社員＋バイトの合計）</h3>
     <div class="rowline">
-      <label>診察（AM/PM）<input type="number" min="1" id="needVisit" style="width:56px"> 名</label>
-      <label>発熱外来<input type="number" min="0" id="needFever" style="width:56px"> 名</label>
+      <label>診察 AM<input type="number" min="1" id="needAm" style="width:50px"> 名</label>
+      <label>PM<input type="number" min="1" id="needPm" style="width:50px"> 名</label>
+      <label>発熱外来<input type="number" min="0" id="needFever" style="width:50px"> 名</label>
     </div>
-    <p class="hint">正社員も人数に含めます。例）合計3名なら、正社員2名の日はバイト1名で充足。正社員が全員休みの日でも合計人数を満たすよう割り当てます。発熱外来は基本は勤務中の正社員が担当し、足りない分をバイトで補います。</p>
+    <p class="hint">正社員も人数に含めます。AM・PMを別々に設定できます（例：AM2名・PM3名）。特定の日だけ変えたいときは、その日をクリックして「この日の必要人数」で上書きできます。発熱外来は勤務中の正社員が担当し、足りない分をバイトで補います。</p>
 
     <h3>スタッフ</h3>
     <div style="overflow:auto"><table class="stbl" id="staffTbl"></table></div>
@@ -229,8 +230,8 @@ function defaultState(){
     irregular:[],  // {staffId, y, mo, dy, scope, pri:'high'|'low'}
     closed:[],     // {y, mo, dy}
     rules:[{dow:'Wed', scope:'am', staffIds:['ishizuka','momose']}],
-    need:{visit:3, fever:1}, // 1コマの合計必要人数（正社員＋バイト）／発熱外来の人数
-    dayNeed:{},    // key -> {visit?,fever?} その日だけの必要人数（上書き）
+    need:{am:3, pm:3, fever:1}, // 必要人数（正社員＋バイト合計）AM/PM/発熱外来
+    dayNeed:{},    // key -> {am?,pm?,fever?} その日だけの必要人数（上書き）
     assign:{},     // key -> {am:[],pm:[],fever:[],open?}
   };
 }
@@ -242,8 +243,16 @@ function load(){
   }catch(e){}
   return defaultState();
 }
-function normalizeState(s){ if(!s.need||typeof s.need.visit!=='number') s.need={visit:3,fever:1}; if(typeof s.need.fever!=='number') s.need.fever=1; if(!s.dayNeed||typeof s.dayNeed!=='object') s.dayNeed={}; }
-function needFor(y,m,d){ const o=state.dayNeed[keyOf(y,m,d)]||{}; return { visit:(typeof o.visit==='number')?o.visit:state.need.visit, fever:(typeof o.fever==='number')?o.fever:state.need.fever }; }
+function normalizeState(s){
+  if(!s.need||typeof s.need!=='object') s.need={am:3,pm:3,fever:1};
+  if(typeof s.need.am!=='number') s.need.am=(typeof s.need.visit==='number'?s.need.visit:3);
+  if(typeof s.need.pm!=='number') s.need.pm=(typeof s.need.visit==='number'?s.need.visit:3);
+  if(typeof s.need.fever!=='number') s.need.fever=1;
+  delete s.need.visit;
+  if(!s.dayNeed||typeof s.dayNeed!=='object') s.dayNeed={};
+  Object.values(s.dayNeed).forEach(o=>{ if(o&&typeof o.visit==='number'){ if(typeof o.am!=='number')o.am=o.visit; if(typeof o.pm!=='number')o.pm=o.visit; delete o.visit; } });
+}
+function needFor(y,m,d){ const o=state.dayNeed[keyOf(y,m,d)]||{}; return { am:(typeof o.am==='number')?o.am:state.need.am, pm:(typeof o.pm==='number')?o.pm:state.need.pm, fever:(typeof o.fever==='number')?o.fever:state.need.fever }; }
 function setDayNeed(key,field,val){ const o=state.dayNeed[key]||{}; o[field]=val; state.dayNeed[key]=o; save(); renderCalendar(); }
 function migrateV4toV5(s){
   const fix={momose:['#2563eb','#ec4899'], shimatera:['#db2777','#2563eb']}; // 旧デフォルト色→新（未変更のもののみ）
@@ -377,10 +386,13 @@ function hoursForDay(s,dow,rec){
 /* ===== 自動生成 ===== */
 function generate(){
   const {y,m}=state, dim=new Date(y,m+1,0).getDate();
-  // 当月分のみ再生成（他の月は変更しない・臨時営業フラグは保持）
+  // 当月分のみ再生成（他の月・固定日は変更しない・臨時営業フラグは保持）
   Object.keys(state.assign).forEach(k=>{ const[ky,km]=k.split('-').map(Number); if(ky!==y||km!==m+1) return;
+    if(state.assign[k].locked) return; // 🔒固定日はそのまま保持
     if(state.assign[k].open) state.assign[k]={am:[],pm:[],fever:[],open:true}; else delete state.assign[k]; });
   const running={}; state.staff.forEach(s=>running[s.id]=0);
+  // 固定日の勤務時間を先に集計（残り日の公平配分のため）
+  for(let d=1;d<=dim;d++){ const r=state.assign[keyOf(y,m,d)]; if(r&&r.locked){ const dw=dowOf(y,m,d); state.staff.forEach(s=>{ running[s.id]+=hoursForDay(s,dw,{am:r.am||[],pm:r.pm||[],fever:r.fever||[]}); }); } }
   const shains=state.staff.filter(s=>s.role==='正社員');
   const baito=state.staff.filter(s=>s.role!=='正社員');
   const target=s=>s.min!=null?s.min:(s.max!=null?s.max:60);
@@ -396,11 +408,12 @@ function generate(){
   for(let d=1;d<=dim;d++){
     if(!isOpenDay(y,m,d)) continue;
     const dow=dowOf(y,m,d), key=keyOf(y,m,d);
+    if(state.assign[key]&&state.assign[key].locked) continue; // 🔒固定日は自動生成で触らない
     const rec=state.assign[key]||{am:[],pm:[],fever:[]}; rec.am=[]; rec.pm=[]; rec.fever=[];
     if(state.assign[key]&&state.assign[key].open) rec.open=true;
 
     const shainsWorking=shains.filter(sh=>baseWorks(sh,y,m,d));
-    const _dn=needFor(y,m,d); const visitNeed=_dn.visit, feverNeed=_dn.fever; // その日の必要人数（日別上書き対応）
+    const _dn=needFor(y,m,d); const amNeed=_dn.am, pmNeed=_dn.pm, feverNeed=_dn.fever; // その日の必要人数（AM/PM/発熱、日別上書き対応）
 
     // 正社員割り当て（正社員も人数にカウント）
     shainsWorking.forEach(sh=>{
@@ -410,13 +423,13 @@ function generate(){
 
     if(dow==='Sat'){
       const c=baito.filter(s=>availSat(s,y,m,d)).sort(ranker([],'sat',d));
-      for(const s of c){ if(rec.am.length>=visitNeed)break; const hrs=s.shift==='am'?3.75:5.25; if(exceedMax(s,hrs))continue; rec.am.push(s.id); running[s.id]+=hrs; }
+      for(const s of c){ if(rec.am.length>=amNeed)break; const hrs=s.shift==='am'?3.75:5.25; if(exceedMax(s,hrs))continue; rec.am.push(s.id); running[s.id]+=hrs; }
       state.assign[key]=rec; continue;
     }
 
     // AM（合計が必要人数に達するまでバイトで補充）
     const amC=baito.filter(s=>availAM(s,y,m,d)).sort(ranker(prefFor(dow,'am'),'am',d));
-    for(const s of amC){ if(rec.am.length>=visitNeed)break; if(rec.am.includes(s.id))continue; const hrs=3.75; if(exceedMax(s,hrs))continue; rec.am.push(s.id); running[s.id]+=hrs; }
+    for(const s of amC){ if(rec.am.length>=amNeed)break; if(rec.am.includes(s.id))continue; const hrs=3.75; if(exceedMax(s,hrs))continue; rec.am.push(s.id); running[s.id]+=hrs; }
     // PM: 優先度→通し優先→充足率
     const pmPref=prefFor(dow,'pm');
     const inAM=new Set(rec.am);
@@ -426,7 +439,7 @@ function generate(){
       const ia=pmPref.indexOf(a.id),ib=pmPref.indexOf(b.id),pa=ia<0?999:ia,pb=ib<0?999:ib; if(pa!==pb)return pa-pb;
       return score(a)-score(b);
     });
-    for(const s of pmElig){ if(rec.pm.length>=visitNeed)break; if(rec.pm.includes(s.id))continue; const hrs=slotHours(dow,'pm'); if(exceedMax(s,hrs))continue; rec.pm.push(s.id); running[s.id]+=hrs; }
+    for(const s of pmElig){ if(rec.pm.length>=pmNeed)break; if(rec.pm.includes(s.id))continue; const hrs=slotHours(dow,'pm'); if(exceedMax(s,hrs))continue; rec.pm.push(s.id); running[s.id]+=hrs; }
     // 発熱外来（月水金）: 正社員で足りなければバイトで必要人数まで補充
     if(hasFever(dow) && rec.fever.length<feverNeed){
       const fc=[...rec.pm.map(id=>staffById(id)).filter(s=>s&&s.role!=='正社員'), ...pmElig].filter((s,i,a)=>a.indexOf(s)===i).sort((a,b)=>score(a)-score(b));
@@ -462,19 +475,21 @@ function renderCalendar(){
       cell.appendChild(dayGrid(rec||{am:[],pm:[],fever:[]}, dow));
       if(rec){
         const cntAll=arr=>(arr||[]).filter(id=>staffById(id)).length;
-        const _n=needFor(y,m,d), vN=_n.visit, fN=_n.fever;
+        const _n=needFor(y,m,d);
         const shorts=[];
-        if(dow==='Sat'){ if(cntAll(rec.am)<vN) shorts.push('土'); }
+        if(dow==='Sat'){ if(cntAll(rec.am)<_n.am) shorts.push('土'); }
         else{
-          if(cntAll(rec.am)<vN) shorts.push('AM');
-          if(cntAll(rec.pm)<vN) shorts.push('PM');
-          if(hasFever(dow) && cntAll(rec.fever)<fN) shorts.push('発熱');
+          if(cntAll(rec.am)<_n.am) shorts.push('AM');
+          if(cntAll(rec.pm)<_n.pm) shorts.push('PM');
+          if(hasFever(dow) && cntAll(rec.fever)<_n.fever) shorts.push('発熱');
         }
         if(shorts.length){ cell.classList.add('short'); const t=document.createElement('div'); t.className='shorttag'; t.textContent='⚠ 不足: '+shorts.join('・'); cell.appendChild(t); }
       }
       const ov=state.dayNeed[key];
-      if(ov&&(typeof ov.visit==='number'||typeof ov.fever==='number')){ const nn=needFor(y,m,d); const t=document.createElement('div'); t.className='irrline'; t.style.color='#7c3aed'; t.textContent=`👥 この日 診${nn.visit}名`+(hasFever(dow)?`/熱${nn.fever}名`:''); cell.appendChild(t); }
+      if(ov&&(typeof ov.am==='number'||typeof ov.pm==='number'||typeof ov.fever==='number')){ const nn=needFor(y,m,d); const t=document.createElement('div'); t.className='irrline'; t.style.color='#7c3aed';
+        t.textContent = dow==='Sat' ? `👥 この日 ${nn.am}名` : `👥 この日 AM${nn.am}/PM${nn.pm}名`+(hasFever(dow)?`/熱${nn.fever}`:''); cell.appendChild(t); }
     }
+    if(rec&&rec.locked){ const l=document.createElement('div'); l.textContent='🔒'; l.title='固定（自動生成で変更しない）'; l.style.cssText='position:absolute;top:4px;right:6px;font-size:12px'; cell.appendChild(l); }
     const offNames=state.staff.filter(s=>isOff(s.id,m,d)).map(s=>s.name);
     if(offNames.length){ const o=document.createElement('div'); o.className='offline'; o.textContent='🛑休: '+offNames.join('・'); cell.appendChild(o); }
     const irr=state.irregular.filter(x=>x.mo===m+1&&x.dy===d);
@@ -530,8 +545,8 @@ function dateVal(y,mo,dy){ if(!mo||!dy)return''; return `${y||state.y}-${String(
 
 function renderSettings(){
   // 必要人数
-  const nv=document.getElementById('needVisit'), nf=document.getElementById('needFever');
-  if(nv) nv.value=state.need.visit; if(nf) nf.value=state.need.fever;
+  const na=document.getElementById('needAm'), np=document.getElementById('needPm'), nf=document.getElementById('needFever');
+  if(na) na.value=state.need.am; if(np) np.value=state.need.pm; if(nf) nf.value=state.need.fever;
   // スタッフ
   const st=document.getElementById('staffTbl');
   st.innerHTML='<tr><th>色</th><th>氏名</th><th>区分</th><th>勤務帯</th>'+WORKDOW.map((dw,i)=>`<th>${DOW_JP[i+1]}</th>`).join('')+'<th>下限</th><th>上限</th><th></th></tr>';
@@ -657,14 +672,25 @@ function openDay(d){
   // この日だけの必要人数（上書き）
   const dn=needFor(y,m,d), hasOv=!!state.dayNeed[key];
   const nrow=document.createElement('div'); nrow.className='rowline';
-  nrow.innerHTML=`<span class="muted">この日の必要人数</span> 診察<input type="number" min="1" id="dayVisit" value="${dn.visit}" style="width:50px">名`
-    +(hasFever(dow)?` 発熱<input type="number" min="0" id="dayFever" value="${dn.fever}" style="width:50px">名`:'')
-    +` <button class="sm" id="dayNeedReset" ${hasOv?'':'disabled'}>全体設定に戻す</button>`;
+  nrow.innerHTML=`<span class="muted">この日の必要人数</span> `
+    +(dow==='Sat'
+      ? `通し<input type="number" min="1" id="dayAm" value="${dn.am}" style="width:50px">名`
+      : `AM<input type="number" min="1" id="dayAm" value="${dn.am}" style="width:50px">名 PM<input type="number" min="1" id="dayPm" value="${dn.pm}" style="width:50px">名`
+        +(hasFever(dow)?` 発熱<input type="number" min="0" id="dayFever" value="${dn.fever}" style="width:50px">名`:''))
+    +` <button class="sm" id="dayNeedReset" ${hasOv?'':'disabled'}>全体に戻す</button>`;
   body.appendChild(nrow);
-  nrow.querySelector('#dayVisit').onchange=e=>{ setDayNeed(key,'visit',Math.max(1,Math.round(+e.target.value)||state.need.visit)); openDay(d); };
+  nrow.querySelector('#dayAm').onchange=e=>{ setDayNeed(key,'am',Math.max(1,Math.round(+e.target.value)||state.need.am)); openDay(d); };
+  const dpm=nrow.querySelector('#dayPm'); if(dpm) dpm.onchange=e=>{ setDayNeed(key,'pm',Math.max(1,Math.round(+e.target.value)||state.need.pm)); openDay(d); };
   const dfv=nrow.querySelector('#dayFever'); if(dfv) dfv.onchange=e=>{ setDayNeed(key,'fever',Math.max(0,Math.round(+e.target.value)||0)); openDay(d); };
   nrow.querySelector('#dayNeedReset').onclick=()=>{ delete state.dayNeed[key]; save(); renderCalendar(); openDay(d); };
-  const nhint=document.createElement('p'); nhint.className='hint'; nhint.textContent='変更後は「自動生成」で反映されます。すでに割り当て済みの日は、下のチェックで手動調整もできます。'; body.appendChild(nhint);
+
+  // この日を固定（自動生成で上書きしない）
+  const locked=!!(state.assign[key]&&state.assign[key].locked);
+  const lrow=document.createElement('div'); lrow.style.margin='4px 0 2px';
+  lrow.innerHTML=`<label style="font-weight:600;display:flex;align-items:center;gap:5px"><input type="checkbox" id="dayLock" ${locked?'checked':''}> 🔒 この日を固定（自動生成で上書きしない）</label>`;
+  body.appendChild(lrow);
+  lrow.querySelector('#dayLock').onchange=e=>{ const r=state.assign[key]||{am:[],pm:[],fever:[]}; r.locked=e.target.checked; state.assign[key]=r; save(); renderCalendar(); };
+  const nhint=document.createElement('p'); nhint.className='hint'; nhint.textContent='必要人数を変えたら「自動生成」で反映。固定した日は自動生成で上書きされません（先に担当を決めてから固定すると便利）。'; body.appendChild(nhint);
 
   const slots = dow==='Sat' ? [{k:'am',label:'終日'}] : hasFever(dow) ? [{k:'am',label:'AM'},{k:'pm',label:'PM'},{k:'fever',label:'発熱'}] : [{k:'am',label:'AM'},{k:'pm',label:'PM'}];
   state.staff.forEach(s=>{
@@ -704,7 +730,8 @@ document.getElementById('importFile').onchange=e=>{ if(e.target.files[0]) import
 document.getElementById('syncConnect').onclick=()=>connectSync(document.getElementById('syncPass').value.trim());
 document.getElementById('syncPass').addEventListener('keydown',e=>{ if(e.key==='Enter') connectSync(e.target.value.trim()); });
 document.getElementById('syncDisconnect').onclick=()=>{ if(confirm('クラウド同期を切断します（このあとはこの端末だけに保存）。よろしいですか？')) disconnectSync(); };
-document.getElementById('needVisit').onchange=e=>{ state.need.visit=Math.max(1,Math.round(+e.target.value)||3); e.target.value=state.need.visit; save(); renderCalendar(); };
+document.getElementById('needAm').onchange=e=>{ state.need.am=Math.max(1,Math.round(+e.target.value)||3); e.target.value=state.need.am; save(); renderCalendar(); };
+document.getElementById('needPm').onchange=e=>{ state.need.pm=Math.max(1,Math.round(+e.target.value)||3); e.target.value=state.need.pm; save(); renderCalendar(); };
 document.getElementById('needFever').onchange=e=>{ state.need.fever=Math.max(0,Math.round(+e.target.value)||0); e.target.value=state.need.fever; save(); renderCalendar(); };
 document.getElementById('addStaff').onclick=()=>{ const pal=['#0891b2','#65a30d','#ca8a04','#c026d3','#e11d48','#4f46e5']; state.staff.push({id:uid(),name:'新規',role:'バイト',shift:'full',color:pal[state.staff.length%pal.length],days:['Mon','Tue','Wed','Fri','Sat'],min:null,max:null}); renderAll(); };
 document.getElementById('addOff').onclick=()=>{ const used=new Set(state.off.filter(o=>o.y===state.y&&o.mo===state.m+1).map(o=>o.staffId)); const s=state.staff.find(st=>!used.has(st.id))||state.staff[0]; state.off.push({staffId:s?s.id:'',y:state.y,mo:state.m+1,dy:1}); renderSettings(); save(); };
