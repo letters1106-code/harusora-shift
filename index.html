@@ -230,6 +230,7 @@ function defaultState(){
     closed:[],     // {y, mo, dy}
     rules:[{dow:'Wed', scope:'am', staffIds:['ishizuka','momose']}],
     need:{visit:3, fever:1}, // 1コマの合計必要人数（正社員＋バイト）／発熱外来の人数
+    dayNeed:{},    // key -> {visit?,fever?} その日だけの必要人数（上書き）
     assign:{},     // key -> {am:[],pm:[],fever:[],open?}
   };
 }
@@ -241,7 +242,9 @@ function load(){
   }catch(e){}
   return defaultState();
 }
-function normalizeState(s){ if(!s.need||typeof s.need.visit!=='number') s.need={visit:3,fever:1}; if(typeof s.need.fever!=='number') s.need.fever=1; }
+function normalizeState(s){ if(!s.need||typeof s.need.visit!=='number') s.need={visit:3,fever:1}; if(typeof s.need.fever!=='number') s.need.fever=1; if(!s.dayNeed||typeof s.dayNeed!=='object') s.dayNeed={}; }
+function needFor(y,m,d){ const o=state.dayNeed[keyOf(y,m,d)]||{}; return { visit:(typeof o.visit==='number')?o.visit:state.need.visit, fever:(typeof o.fever==='number')?o.fever:state.need.fever }; }
+function setDayNeed(key,field,val){ const o=state.dayNeed[key]||{}; o[field]=val; state.dayNeed[key]=o; save(); renderCalendar(); }
 function migrateV4toV5(s){
   const fix={momose:['#2563eb','#ec4899'], shimatera:['#db2777','#2563eb']}; // 旧デフォルト色→新（未変更のもののみ）
   s.staff.forEach(st=>{ const f=fix[st.id]; if(f&&st.color===f[0]) st.color=f[1]; });
@@ -397,7 +400,7 @@ function generate(){
     if(state.assign[key]&&state.assign[key].open) rec.open=true;
 
     const shainsWorking=shains.filter(sh=>baseWorks(sh,y,m,d));
-    const visitNeed=state.need.visit, feverNeed=state.need.fever; // 1コマの合計必要人数（正社員＋バイト）
+    const _dn=needFor(y,m,d); const visitNeed=_dn.visit, feverNeed=_dn.fever; // その日の必要人数（日別上書き対応）
 
     // 正社員割り当て（正社員も人数にカウント）
     shainsWorking.forEach(sh=>{
@@ -459,7 +462,7 @@ function renderCalendar(){
       cell.appendChild(dayGrid(rec||{am:[],pm:[],fever:[]}, dow));
       if(rec){
         const cntAll=arr=>(arr||[]).filter(id=>staffById(id)).length;
-        const vN=state.need.visit, fN=state.need.fever;
+        const _n=needFor(y,m,d), vN=_n.visit, fN=_n.fever;
         const shorts=[];
         if(dow==='Sat'){ if(cntAll(rec.am)<vN) shorts.push('土'); }
         else{
@@ -469,6 +472,8 @@ function renderCalendar(){
         }
         if(shorts.length){ cell.classList.add('short'); const t=document.createElement('div'); t.className='shorttag'; t.textContent='⚠ 不足: '+shorts.join('・'); cell.appendChild(t); }
       }
+      const ov=state.dayNeed[key];
+      if(ov&&(typeof ov.visit==='number'||typeof ov.fever==='number')){ const nn=needFor(y,m,d); const t=document.createElement('div'); t.className='irrline'; t.style.color='#7c3aed'; t.textContent=`👥 この日 診${nn.visit}名`+(hasFever(dow)?`/熱${nn.fever}名`:''); cell.appendChild(t); }
     }
     const offNames=state.staff.filter(s=>isOff(s.id,m,d)).map(s=>s.name);
     if(offNames.length){ const o=document.createElement('div'); o.className='offline'; o.textContent='🛑休: '+offNames.join('・'); cell.appendChild(o); }
@@ -646,8 +651,20 @@ function openDay(d){
   }
 
   const note=document.createElement('p'); note.className='hint';
-  note.textContent=dow==='Sat'?'土曜: 8:45–14:00（通し）':dow==='Tue'?'火曜: AM / PM診察 13:45–18:30（発熱外来なし・3名）':'AM / PM診察 13:45–17:00 / 発熱外来 17:00–18:30';
+  note.textContent=dow==='Sat'?'土曜: 8:45–14:00（通し）':dow==='Tue'?'火曜: AM / PM診察 13:45–18:30（発熱外来なし）':'AM / PM診察 13:45–17:00 / 発熱外来 17:00–18:30';
   body.appendChild(note);
+
+  // この日だけの必要人数（上書き）
+  const dn=needFor(y,m,d), hasOv=!!state.dayNeed[key];
+  const nrow=document.createElement('div'); nrow.className='rowline';
+  nrow.innerHTML=`<span class="muted">この日の必要人数</span> 診察<input type="number" min="1" id="dayVisit" value="${dn.visit}" style="width:50px">名`
+    +(hasFever(dow)?` 発熱<input type="number" min="0" id="dayFever" value="${dn.fever}" style="width:50px">名`:'')
+    +` <button class="sm" id="dayNeedReset" ${hasOv?'':'disabled'}>全体設定に戻す</button>`;
+  body.appendChild(nrow);
+  nrow.querySelector('#dayVisit').onchange=e=>{ setDayNeed(key,'visit',Math.max(1,Math.round(+e.target.value)||state.need.visit)); openDay(d); };
+  const dfv=nrow.querySelector('#dayFever'); if(dfv) dfv.onchange=e=>{ setDayNeed(key,'fever',Math.max(0,Math.round(+e.target.value)||0)); openDay(d); };
+  nrow.querySelector('#dayNeedReset').onclick=()=>{ delete state.dayNeed[key]; save(); renderCalendar(); openDay(d); };
+  const nhint=document.createElement('p'); nhint.className='hint'; nhint.textContent='変更後は「自動生成」で反映されます。すでに割り当て済みの日は、下のチェックで手動調整もできます。'; body.appendChild(nhint);
 
   const slots = dow==='Sat' ? [{k:'am',label:'終日'}] : hasFever(dow) ? [{k:'am',label:'AM'},{k:'pm',label:'PM'},{k:'fever',label:'発熱'}] : [{k:'am',label:'AM'},{k:'pm',label:'PM'}];
   state.staff.forEach(s=>{
