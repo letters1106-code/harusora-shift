@@ -142,6 +142,13 @@
   <div class="card" id="settings">
     <h2>⚙️ スタッフ・条件設定</h2>
 
+    <h3>1コマの必要人数（正社員＋バイトの合計）</h3>
+    <div class="rowline">
+      <label>診察（AM/PM）<input type="number" min="1" id="needVisit" style="width:56px"> 名</label>
+      <label>発熱外来<input type="number" min="0" id="needFever" style="width:56px"> 名</label>
+    </div>
+    <p class="hint">正社員も人数に含めます。例）合計3名なら、正社員2名の日はバイト1名で充足。正社員が全員休みの日でも合計人数を満たすよう割り当てます。発熱外来は基本は勤務中の正社員が担当し、足りない分をバイトで補います。</p>
+
     <h3>スタッフ</h3>
     <div style="overflow:auto"><table class="stbl" id="staffTbl"></table></div>
     <button class="sm" id="addStaff" style="margin-top:8px">＋ メンバー追加</button>
@@ -222,17 +229,19 @@ function defaultState(){
     irregular:[],  // {staffId, y, mo, dy, scope, pri:'high'|'low'}
     closed:[],     // {y, mo, dy}
     rules:[{dow:'Wed', scope:'am', staffIds:['ishizuka','momose']}],
+    need:{visit:3, fever:1}, // 1コマの合計必要人数（正社員＋バイト）／発熱外来の人数
     assign:{},     // key -> {am:[],pm:[],fever:[],open?}
   };
 }
 let state=load();
 function load(){
   try{ const s=JSON.parse(localStorage.getItem('shiftAppState'));
-    if(s&&s.version===STATE_VER) return s;
-    if(s&&s.version===4&&s.staff){ migrateV4toV5(s); return s; } // データを保持したまま色修正＋阪本追加
+    if(s&&s.version===STATE_VER){ normalizeState(s); return s; }
+    if(s&&s.version===4&&s.staff){ migrateV4toV5(s); normalizeState(s); return s; } // データを保持したまま色修正＋阪本追加
   }catch(e){}
   return defaultState();
 }
+function normalizeState(s){ if(!s.need||typeof s.need.visit!=='number') s.need={visit:3,fever:1}; if(typeof s.need.fever!=='number') s.need.fever=1; }
 function migrateV4toV5(s){
   const fix={momose:['#2563eb','#ec4899'], shimatera:['#db2777','#2563eb']}; // 旧デフォルト色→新（未変更のもののみ）
   s.staff.forEach(st=>{ const f=fix[st.id]; if(f&&st.color===f[0]) st.color=f[1]; });
@@ -262,7 +271,7 @@ function connectSync(pass){
     if(snap.exists){
       const d=snap.data();
       if(d&&d.state&&JSON.stringify(d.state)!==JSON.stringify(state)){
-        sync.applying=true; state=d.state; localStorage.setItem('shiftAppState',JSON.stringify(state)); renderAll(); sync.applying=false;
+        sync.applying=true; state=d.state; normalizeState(state); localStorage.setItem('shiftAppState',JSON.stringify(state)); renderAll(); sync.applying=false;
       }
       setSyncStatus('☁ 同期中 ●（合言葉を知る全員と共有）');
     } else {
@@ -290,6 +299,7 @@ function importData(file){
     if(!s||!Array.isArray(s.staff)){ alert('このファイルはシフト設定として読み込めません。'); return; }
     if(!confirm('現在のデータを、読み込んだ内容で置き換えます。よろしいですか？')) return;
     if(s.version===4) migrateV4toV5(s);
+    normalizeState(s);
     state=s; save(); renderAll(); alert('読み込みました。');
   }catch(e){ alert('読み込みに失敗しました：'+e.message); } };
   r.readAsText(file);
@@ -387,9 +397,9 @@ function generate(){
     if(state.assign[key]&&state.assign[key].open) rec.open=true;
 
     const shainsWorking=shains.filter(sh=>baseWorks(sh,y,m,d));
-    const bodyNeed = shainsWorking.length>0 ? 2 : 3; // 正社員が休みならバイト3名
+    const visitNeed=state.need.visit, feverNeed=state.need.fever; // 1コマの合計必要人数（正社員＋バイト）
 
-    // 正社員割り当て
+    // 正社員割り当て（正社員も人数にカウント）
     shainsWorking.forEach(sh=>{
       if(dow==='Sat'){ rec.am.push(sh.id); running[sh.id]+=5.25; }
       else { rec.am.push(sh.id); rec.pm.push(sh.id); running[sh.id]+=3.75+slotHours(dow,'pm'); if(hasFever(dow)){ rec.fever.push(sh.id); running[sh.id]+=1.5; } }
@@ -397,13 +407,13 @@ function generate(){
 
     if(dow==='Sat'){
       const c=baito.filter(s=>availSat(s,y,m,d)).sort(ranker([],'sat',d));
-      for(const s of c){ if(rec.am.filter(id=>staffById(id).role!=='正社員').length>=bodyNeed)break; const hrs=s.shift==='am'?3.75:5.25; if(exceedMax(s,hrs))continue; rec.am.push(s.id); running[s.id]+=hrs; }
+      for(const s of c){ if(rec.am.length>=visitNeed)break; const hrs=s.shift==='am'?3.75:5.25; if(exceedMax(s,hrs))continue; rec.am.push(s.id); running[s.id]+=hrs; }
       state.assign[key]=rec; continue;
     }
 
-    // AM
+    // AM（合計が必要人数に達するまでバイトで補充）
     const amC=baito.filter(s=>availAM(s,y,m,d)).sort(ranker(prefFor(dow,'am'),'am',d));
-    for(const s of amC){ if(rec.am.filter(id=>staffById(id).role!=='正社員').length>=bodyNeed)break; if(rec.am.includes(s.id))continue; const hrs=3.75; if(exceedMax(s,hrs))continue; rec.am.push(s.id); running[s.id]+=hrs; }
+    for(const s of amC){ if(rec.am.length>=visitNeed)break; if(rec.am.includes(s.id))continue; const hrs=3.75; if(exceedMax(s,hrs))continue; rec.am.push(s.id); running[s.id]+=hrs; }
     // PM: 優先度→通し優先→充足率
     const pmPref=prefFor(dow,'pm');
     const inAM=new Set(rec.am);
@@ -413,11 +423,11 @@ function generate(){
       const ia=pmPref.indexOf(a.id),ib=pmPref.indexOf(b.id),pa=ia<0?999:ia,pb=ib<0?999:ib; if(pa!==pb)return pa-pb;
       return score(a)-score(b);
     });
-    for(const s of pmElig){ if(rec.pm.filter(id=>staffById(id).role!=='正社員').length>=bodyNeed)break; if(rec.pm.includes(s.id))continue; const hrs=slotHours(dow,'pm'); if(exceedMax(s,hrs))continue; rec.pm.push(s.id); running[s.id]+=hrs; }
-    // 発熱外来（月水金）: 正社員がいなければバイト1名
-    if(hasFever(dow) && rec.fever.length===0){
+    for(const s of pmElig){ if(rec.pm.length>=visitNeed)break; if(rec.pm.includes(s.id))continue; const hrs=slotHours(dow,'pm'); if(exceedMax(s,hrs))continue; rec.pm.push(s.id); running[s.id]+=hrs; }
+    // 発熱外来（月水金）: 正社員で足りなければバイトで必要人数まで補充
+    if(hasFever(dow) && rec.fever.length<feverNeed){
       const fc=[...rec.pm.map(id=>staffById(id)).filter(s=>s&&s.role!=='正社員'), ...pmElig].filter((s,i,a)=>a.indexOf(s)===i).sort((a,b)=>score(a)-score(b));
-      for(const s of fc){ const hrs=1.5; if(exceedMax(s,hrs))continue; rec.fever.push(s.id); running[s.id]+=hrs; break; }
+      for(const s of fc){ if(rec.fever.length>=feverNeed)break; if(rec.fever.includes(s.id))continue; const hrs=1.5; if(exceedMax(s,hrs))continue; rec.fever.push(s.id); running[s.id]+=hrs; }
     }
     state.assign[key]=rec;
   }
@@ -448,15 +458,14 @@ function renderCalendar(){
     }else{
       cell.appendChild(dayGrid(rec||{am:[],pm:[],fever:[]}, dow));
       if(rec){
-        const cntB=arr=>(arr||[]).filter(id=>{const s=staffById(id);return s&&s.role!=='正社員';}).length;
-        const shainWorks=state.staff.some(s=>s.role==='正社員'&&baseWorks(s,y,m,d));
-        const need=shainWorks?2:3;
+        const cntAll=arr=>(arr||[]).filter(id=>staffById(id)).length;
+        const vN=state.need.visit, fN=state.need.fever;
         const shorts=[];
-        if(dow==='Sat'){ if(cntB(rec.am)<need) shorts.push('土'); }
+        if(dow==='Sat'){ if(cntAll(rec.am)<vN) shorts.push('土'); }
         else{
-          if(cntB(rec.am)<need) shorts.push('AM');
-          if(cntB(rec.pm)<need) shorts.push('PM');
-          if(hasFever(dow) && (!rec.fever||rec.fever.length===0)) shorts.push('発熱');
+          if(cntAll(rec.am)<vN) shorts.push('AM');
+          if(cntAll(rec.pm)<vN) shorts.push('PM');
+          if(hasFever(dow) && cntAll(rec.fever)<fN) shorts.push('発熱');
         }
         if(shorts.length){ cell.classList.add('short'); const t=document.createElement('div'); t.className='shorttag'; t.textContent='⚠ 不足: '+shorts.join('・'); cell.appendChild(t); }
       }
@@ -515,6 +524,9 @@ function nameOptions(sel){ return state.staff.map(s=>`<option value="${s.id}" ${
 function dateVal(y,mo,dy){ if(!mo||!dy)return''; return `${y||state.y}-${String(mo).padStart(2,'0')}-${String(dy).padStart(2,'0')}`; }
 
 function renderSettings(){
+  // 必要人数
+  const nv=document.getElementById('needVisit'), nf=document.getElementById('needFever');
+  if(nv) nv.value=state.need.visit; if(nf) nf.value=state.need.fever;
   // スタッフ
   const st=document.getElementById('staffTbl');
   st.innerHTML='<tr><th>色</th><th>氏名</th><th>区分</th><th>勤務帯</th>'+WORKDOW.map((dw,i)=>`<th>${DOW_JP[i+1]}</th>`).join('')+'<th>下限</th><th>上限</th><th></th></tr>';
@@ -675,6 +687,8 @@ document.getElementById('importFile').onchange=e=>{ if(e.target.files[0]) import
 document.getElementById('syncConnect').onclick=()=>connectSync(document.getElementById('syncPass').value.trim());
 document.getElementById('syncPass').addEventListener('keydown',e=>{ if(e.key==='Enter') connectSync(e.target.value.trim()); });
 document.getElementById('syncDisconnect').onclick=()=>{ if(confirm('クラウド同期を切断します（このあとはこの端末だけに保存）。よろしいですか？')) disconnectSync(); };
+document.getElementById('needVisit').onchange=e=>{ state.need.visit=Math.max(1,Math.round(+e.target.value)||3); e.target.value=state.need.visit; save(); renderCalendar(); };
+document.getElementById('needFever').onchange=e=>{ state.need.fever=Math.max(0,Math.round(+e.target.value)||0); e.target.value=state.need.fever; save(); renderCalendar(); };
 document.getElementById('addStaff').onclick=()=>{ const pal=['#0891b2','#65a30d','#ca8a04','#c026d3','#e11d48','#4f46e5']; state.staff.push({id:uid(),name:'新規',role:'バイト',shift:'full',color:pal[state.staff.length%pal.length],days:['Mon','Tue','Wed','Fri','Sat'],min:null,max:null}); renderAll(); };
 document.getElementById('addOff').onclick=()=>{ const used=new Set(state.off.filter(o=>o.y===state.y&&o.mo===state.m+1).map(o=>o.staffId)); const s=state.staff.find(st=>!used.has(st.id))||state.staff[0]; state.off.push({staffId:s?s.id:'',y:state.y,mo:state.m+1,dy:1}); renderSettings(); save(); };
 document.getElementById('addIrr').onclick=()=>{ const s=state.staff[0]; state.irregular.push({staffId:s?s.id:'',y:state.y,mo:state.m+1,dy:1,scope:'pm',pri:'high'}); renderSettings(); save(); };
