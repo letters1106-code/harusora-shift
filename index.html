@@ -156,6 +156,12 @@
 
   <div class="cal" id="cal"></div>
 
+  <div class="card" id="memoCard" style="margin-top:12px">
+    <h2 style="margin-bottom:6px">📝 備考メモ（<span id="memoMonth"></span>）</h2>
+    <textarea id="memoBox" placeholder="例）7/8(火) は阪本 17:30まで ／ 7/15(火) は大宮 有給（半日）　など、この月の連絡事項を自由に記入" style="width:100%;min-height:90px;box-sizing:border-box;font:inherit;padding:8px;border:1px solid var(--line);border-radius:8px;resize:vertical"></textarea>
+    <p class="hint" id="memoHint">この月ごとのメモです。合言葉で共有している全員に表示されます（編集できるのは編集モードのときだけ）。</p>
+  </div>
+
   <div class="grid2">
     <div class="card" id="hoursCard" style="margin-top:0">
       <h2>義務時間の達成状況（当月・実働）</h2>
@@ -269,7 +275,8 @@ function defaultState(){
     rules:[{dow:'Wed', scope:'am', staffIds:['ishizuka','momose']}],
     need:{am:3, pm:3, fever:1}, // 必要人数（正社員＋バイト合計）AM/PM/発熱外来
     dayNeed:{},    // key -> {am?,pm?,fever?} その日だけの必要人数（上書き）
-    assign:{},     // key -> {am:[],pm:[],fever:[],open?}
+    assign:{},     // key -> {am:[],pm:[],fever:[],open?,hours?}
+    memo:{},       // "y-mo" -> 月ごとの備考メモ（自由記述）
   };
 }
 let state=load();
@@ -287,6 +294,7 @@ function normalizeState(s){
   if(typeof s.need.fever!=='number') s.need.fever=1;
   delete s.need.visit;
   if(!s.dayNeed||typeof s.dayNeed!=='object') s.dayNeed={};
+  if(!s.memo||typeof s.memo!=='object') s.memo={};
   Object.values(s.dayNeed).forEach(o=>{ if(o&&typeof o.visit==='number'){ if(typeof o.am!=='number')o.am=o.visit; if(typeof o.pm!=='number')o.pm=o.visit; delete o.visit; } });
 }
 function needFor(y,m,d){ const o=state.dayNeed[keyOf(y,m,d)]||{}; return { am:(typeof o.am==='number')?o.am:state.need.am, pm:(typeof o.pm==='number')?o.pm:state.need.pm, fever:(typeof o.fever==='number')?o.fever:state.need.fever }; }
@@ -310,7 +318,7 @@ function save(){ localStorage.setItem('shiftAppState', JSON.stringify(state)); i
 const sync={on:false, applying:false, docRef:null, unsub:null, timer:null, mode:'edit', editHash:null, pendingEditHash:null};
 function editHashFrom(pass){ pass=(pass||'').trim(); return pass ? cyrb53('edit::'+pass,11).toString(16) : null; }
 function isReadOnly(){ return sync.on && sync.mode==='view'; }
-function applyMode(){ const ro=isReadOnly(); document.body.classList.toggle('viewonly', ro); const vb=document.getElementById('viewBanner'); if(vb) vb.style.display=ro?'':'none'; }
+function applyMode(){ const ro=isReadOnly(); document.body.classList.toggle('viewonly', ro); const vb=document.getElementById('viewBanner'); if(vb) vb.style.display=ro?'':'none'; renderMemo(); }
 function cyrb53(str,seed=0){ let h1=0xdeadbeef^seed,h2=0x41c6ce57^seed; for(let i=0,ch;i<str.length;i++){ ch=str.charCodeAt(i); h1=Math.imul(h1^ch,2654435761); h2=Math.imul(h2^ch,1597334677); } h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909); h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909); return (4294967296*(2097151&h2)+(h1>>>0)); }
 function roomIdFrom(pass){ return 'room_'+cyrb53('harusora-shift::'+pass,7).toString(16); }
 function setSyncStatus(t){ const el=document.getElementById('syncStatus'); if(el) el.textContent=t; }
@@ -426,6 +434,9 @@ function isOpenDay(y,m,d){
 /* ===== 時間・稼働 ===== */
 function hasFever(dow){ return dow==='Mon'||dow==='Wed'||dow==='Fri'; }
 function slotHours(dow,slot){ if(slot==='am')return 3.75; if(slot==='pm')return dow==='Tue'?4.75:3.25; if(slot==='fever')return 1.5; return 0; }
+// 臨時営業の営業時間（開始〜終了）から実働時間を算出。通し1枠として扱う日の判定にも使う。
+function spanHours(h){ if(!h||!h.start||!h.end)return 0; const p=t=>{const[a,b]=String(t).split(':').map(Number);return a*60+(b||0);}; let mn=p(h.end)-p(h.start); if(mn<0)mn+=1440; return Math.round(mn/60*100)/100; }
+function isTempCustom(rec){ return !!(rec&&rec.open&&rec.hours&&rec.hours.start&&rec.hours.end); }
 function isOff(id,m,d){ return state.off.some(o=>o.staffId===id&&o.y===state.y&&o.mo===m+1&&o.dy===d); }
 function irregFor(id,m,d){ return state.irregular.filter(x=>x.staffId===id&&x.y===state.y&&x.mo===m+1&&x.dy===d); }
 // この人・この日・この枠でイレギュラー指定があれば優先度を返す（high=競合 / low=補充）
@@ -441,6 +452,7 @@ function availPM(s,y,m,d){ if(irregFor(s.id,m,d).some(x=>x.scope==='pm'||x.scope
 function availSat(s,y,m,d){ if(irregFor(s.id,m,d).some(x=>x.scope==='full'||x.scope==='am'))return true; return baseWorks(s,y,m,d)&&s.shift!=='pm'; }
 
 function hoursForDay(s,dow,rec){
+  if(rec.open&&rec.hours&&rec.hours.start&&rec.hours.end){ return rec.am.includes(s.id)?spanHours(rec.hours):0; } // 臨時営業の指定時間（通し）
   if(dow==='Sat'){ return rec.am.includes(s.id)?(s.shift==='am'?3.75:5.25):0; }
   let h=0; if(rec.am.includes(s.id))h+=3.75; if(rec.pm.includes(s.id))h+=slotHours(dow,'pm'); if(rec.fever&&rec.fever.includes(s.id))h+=1.5; return h;
 }
@@ -451,10 +463,10 @@ function generate(){
   // 当月分のみ再生成（他の月・固定日は変更しない・臨時営業フラグは保持）
   Object.keys(state.assign).forEach(k=>{ const[ky,km]=k.split('-').map(Number); if(ky!==y||km!==m+1) return;
     if(state.assign[k].locked) return; // 🔒固定日はそのまま保持
-    if(state.assign[k].open) state.assign[k]={am:[],pm:[],fever:[],open:true}; else delete state.assign[k]; });
+    if(state.assign[k].open) state.assign[k]={am:[],pm:[],fever:[],open:true,hours:state.assign[k].hours}; else delete state.assign[k]; });
   const running={}; state.staff.forEach(s=>running[s.id]=0);
   // 固定日の勤務時間を先に集計（残り日の公平配分のため）
-  for(let d=1;d<=dim;d++){ const r=state.assign[keyOf(y,m,d)]; if(r&&r.locked){ const dw=dowOf(y,m,d); state.staff.forEach(s=>{ running[s.id]+=hoursForDay(s,dw,{am:r.am||[],pm:r.pm||[],fever:r.fever||[]}); }); } }
+  for(let d=1;d<=dim;d++){ const r=state.assign[keyOf(y,m,d)]; if(r&&r.locked){ const dw=dowOf(y,m,d); state.staff.forEach(s=>{ running[s.id]+=hoursForDay(s,dw,{am:r.am||[],pm:r.pm||[],fever:r.fever||[],open:r.open,hours:r.hours}); }); } }
   const shains=state.staff.filter(s=>s.role==='正社員');
   const baito=state.staff.filter(s=>s.role!=='正社員');
   const target=s=>s.min!=null?s.min:(s.max!=null?s.max:60);
@@ -513,7 +525,7 @@ function generate(){
 }
 
 /* ===== 描画 ===== */
-function renderAll(){ document.getElementById('mLabel').textContent=`${state.y}年 ${state.m+1}月`; renderCalendar(); renderHours(); renderSettings(); save(); }
+function renderAll(){ document.getElementById('mLabel').textContent=`${state.y}年 ${state.m+1}月`; renderCalendar(); renderHours(); renderMemo(); renderSettings(); save(); }
 
 function renderCalendar(){
   const {y,m}=state, cal=document.getElementById('cal'); cal.innerHTML='';
@@ -539,7 +551,7 @@ function renderCalendar(){
         const cntAll=arr=>(arr||[]).filter(id=>staffById(id)).length;
         const _n=needFor(y,m,d);
         const shorts=[];
-        if(dow==='Sat'){ if(cntAll(rec.am)<_n.am) shorts.push('土'); }
+        if(dow==='Sat'||isTempCustom(rec)){ if(cntAll(rec.am)<_n.am) shorts.push('通'); }
         else{
           if(cntAll(rec.am)<_n.am) shorts.push('AM');
           if(cntAll(rec.pm)<_n.pm) shorts.push('PM');
@@ -564,7 +576,8 @@ function chipEl(st){ const c=document.createElement('span'); c.className='chip';
 const staffIdx=id=>state.staff.findIndex(s=>s.id===id);
 // 各行をスタッフ順で左詰め（空欄なし・共通メンバーは自然に縦揃い）
 function dayGrid(rec,dow){
-  const slots = dow==='Sat' ? [{k:'am',label:'土 8:45–14:00'}]
+  const slots = isTempCustom(rec) ? [{k:'am',label:`${rec.hours.start}–${rec.hours.end}`}]
+    : dow==='Sat' ? [{k:'am',label:'土 8:45–14:00'}]
     : hasFever(dow) ? [{k:'am',label:'AM'},{k:'pm',label:'PM'},{k:'fever',label:'熱'}]
     : [{k:'am',label:'AM'},{k:'pm',label:dow==='Tue'?'PM~18:30':'PM'}];
   const grid=document.createElement('div');
@@ -583,7 +596,7 @@ function dayGrid(rec,dow){
 function computeHours(){
   const res={}; state.staff.forEach(s=>res[s.id]=0); const {y,m}=state;
   Object.entries(state.assign).forEach(([key,rec])=>{ const [ky,km,kd]=key.split('-').map(Number); if(ky!==y||km!==m+1)return; const dow=dowOf(y,m,kd);
-    state.staff.forEach(s=>{ res[s.id]+=hoursForDay(s,dow,{am:rec.am||[],pm:rec.pm||[],fever:rec.fever||[]}); }); });
+    state.staff.forEach(s=>{ res[s.id]+=hoursForDay(s,dow,{am:rec.am||[],pm:rec.pm||[],fever:rec.fever||[],open:rec.open,hours:rec.hours}); }); });
   return res;
 }
 function renderHours(){
@@ -600,6 +613,15 @@ function renderHours(){
       <td><div class="bar"><span style="width:${pct}%;background:${col}"></span></div></td>`;
     tbl.appendChild(tr);
   });
+}
+
+/* ===== 備考メモ（月ごと） ===== */
+function memoKey(){ return `${state.y}-${state.m+1}`; }
+function renderMemo(){
+  const box=document.getElementById('memoBox'); if(!box) return;
+  const mm=document.getElementById('memoMonth'); if(mm) mm.textContent=`${state.y}年 ${state.m+1}月`;
+  if(document.activeElement!==box) box.value=state.memo[memoKey()]||''; // 入力中はカーソルを壊さない
+  box.readOnly=isReadOnly(); box.style.background=isReadOnly()?'#f1f5f9':'';
 }
 
 /* ===== 設定 ===== */
@@ -723,7 +745,7 @@ function openDay(d){
       const note=document.createElement('p'); note.className='hint';
       note.textContent=dow==='Sat'?'土曜: 8:45–14:00（通し）':dow==='Tue'?'火曜: AM / PM診察 13:45–18:30（発熱外来なし）':'AM / PM診察 13:45–17:00 / 発熱外来 17:00–18:30';
       body.appendChild(note);
-      const slots = dow==='Sat' ? [{k:'am',label:'終日'}] : hasFever(dow) ? [{k:'am',label:'AM'},{k:'pm',label:'PM'},{k:'fever',label:'発熱'}] : [{k:'am',label:'AM'},{k:'pm',label:'PM'}];
+      const slots = isTempCustom(rec) ? [{k:'am',label:`${rec.hours.start}–${rec.hours.end}`}] : dow==='Sat' ? [{k:'am',label:'終日'}] : hasFever(dow) ? [{k:'am',label:'AM'},{k:'pm',label:'PM'},{k:'fever',label:'発熱'}] : [{k:'am',label:'AM'},{k:'pm',label:'PM'}];
       slots.forEach(sl=>{
         const names=(rec[sl.k]||[]).map(id=>{const st=staffById(id);return st?st.name:'';}).filter(Boolean).join('・')||'—';
         const line=document.createElement('div'); line.className='staffline';
@@ -738,22 +760,37 @@ function openDay(d){
     p.innerHTML='この日は<b>休診</b>です'+(hol?`（祝日: ${hol}）`:manualClosed(m,d)?'（手動休診）':'')+'。';
     body.appendChild(p);
     const b1=document.createElement('button'); b1.className='primary'; b1.textContent='臨時営業日にする';
-    b1.onclick=()=>{ state.closed=state.closed.filter(c=>!(c.y===state.y&&c.mo===m+1&&c.dy===d)); state.assign[key]={am:[],pm:[],fever:[],open:true}; save(); openDay(d); renderCalendar(); };
+    b1.onclick=()=>{ state.closed=state.closed.filter(c=>!(c.y===state.y&&c.mo===m+1&&c.dy===d)); state.assign[key]={am:[],pm:[],fever:[],open:true,hours:{start:'08:45',end:'13:00'}}; save(); openDay(d); renderCalendar(); };
     body.appendChild(b1);
     if(manualClosed(m,d)){ const b2=document.createElement('button'); b2.style.marginLeft='8px'; b2.textContent='手動休診を解除';
       b2.onclick=()=>{ state.closed=state.closed.filter(c=>!(c.y===state.y&&c.mo===m+1&&c.dy===d)); save(); openDay(d); renderAll(); }; body.appendChild(b2); }
     document.getElementById('dayOverlay').classList.add('on'); return;
   }
 
+  const isTemp=!!(state.assign[key]&&state.assign[key].open); // 臨時営業日（日・木などを開けた日）
+  const single=(dow==='Sat'||isTemp); // 通し1枠で扱う日
+
   const note=document.createElement('p'); note.className='hint';
-  note.textContent=dow==='Sat'?'土曜: 8:45–14:00（通し）':dow==='Tue'?'火曜: AM / PM診察 13:45–18:30（発熱外来なし）':'AM / PM診察 13:45–17:00 / 発熱外来 17:00–18:30';
+  note.textContent=isTemp?'臨時営業日: 下の「営業時間」を設定すると、その時間が通しで実働に加算されます。':dow==='Sat'?'土曜: 8:45–14:00（通し）':dow==='Tue'?'火曜: AM / PM診察 13:45–18:30（発熱外来なし）':'AM / PM診察 13:45–17:00 / 発熱外来 17:00–18:30';
   body.appendChild(note);
+
+  // 臨時営業の営業時間（開始〜終了）
+  if(isTemp){
+    const rec0=state.assign[key]; if(!rec0.hours){ rec0.hours={start:'08:45',end:'13:00'}; save(); renderCalendar(); }
+    const hrow=document.createElement('div'); hrow.className='rowline'; hrow.style.margin='2px 0 6px';
+    hrow.innerHTML=`<span class="muted">営業時間</span> <input type="time" id="tStart" value="${rec0.hours.start}"> 〜 <input type="time" id="tEnd" value="${rec0.hours.end}"> <b id="tSpan" style="color:#0d9488"></b>`;
+    body.appendChild(hrow);
+    const upd=()=>{ document.getElementById('tSpan').textContent='＝ '+spanHours(rec0.hours).toFixed(2)+'h / 人'; };
+    upd();
+    hrow.querySelector('#tStart').onchange=e=>{ rec0.hours.start=e.target.value||'08:45'; save(); renderAll(); openDay(d); };
+    hrow.querySelector('#tEnd').onchange=e=>{ rec0.hours.end=e.target.value||'13:00'; save(); renderAll(); openDay(d); };
+  }
 
   // この日だけの必要人数（上書き）
   const dn=needFor(y,m,d), hasOv=!!state.dayNeed[key];
   const nrow=document.createElement('div'); nrow.className='rowline';
   nrow.innerHTML=`<span class="muted">この日の必要人数</span> `
-    +(dow==='Sat'
+    +(single
       ? `通し<input type="number" min="1" id="dayAm" value="${dn.am}" style="width:50px">名`
       : `AM<input type="number" min="1" id="dayAm" value="${dn.am}" style="width:50px">名 PM<input type="number" min="1" id="dayPm" value="${dn.pm}" style="width:50px">名`
         +(hasFever(dow)?` 発熱<input type="number" min="0" id="dayFever" value="${dn.fever}" style="width:50px">名`:''))
@@ -772,7 +809,7 @@ function openDay(d){
   lrow.querySelector('#dayLock').onchange=e=>{ const r=state.assign[key]||{am:[],pm:[],fever:[]}; r.locked=e.target.checked; state.assign[key]=r; save(); renderCalendar(); };
   const nhint=document.createElement('p'); nhint.className='hint'; nhint.textContent='必要人数を変えたら「自動生成」で反映。固定した日は自動生成で上書きされません（先に担当を決めてから固定すると便利）。'; body.appendChild(nhint);
 
-  const slots = dow==='Sat' ? [{k:'am',label:'終日'}] : hasFever(dow) ? [{k:'am',label:'AM'},{k:'pm',label:'PM'},{k:'fever',label:'発熱'}] : [{k:'am',label:'AM'},{k:'pm',label:'PM'}];
+  const slots = single ? [{k:'am',label:'終日'}] : hasFever(dow) ? [{k:'am',label:'AM'},{k:'pm',label:'PM'},{k:'fever',label:'発熱'}] : [{k:'am',label:'AM'},{k:'pm',label:'PM'}];
   state.staff.forEach(s=>{
     const line=document.createElement('div'); line.className='staffline';
     let sub=`<span class="sw" style="background:${s.color}"></span>`+(s.role==='正社員'?'<span class="pill ok">正</span> ':s.role==='単発'?'<span class="pill" style="background:#e6fbf7;color:#0d9488">単発</span> ':'');
@@ -804,6 +841,7 @@ document.getElementById('nextM').onclick=()=>{ state.m++; if(state.m>11){state.m
 document.getElementById('genBtn').onclick=()=>{ if(confirm('当月のシフトを自動生成します（手動修正は上書きされます）。よろしいですか？')) generate(); };
 document.getElementById('clearBtn').onclick=()=>{ if(confirm('当月の担当をすべてクリアしますか？')){ const {y,m}=state; Object.keys(state.assign).forEach(k=>{const[ky,km]=k.split('-').map(Number); if(ky===y&&km===m+1) delete state.assign[k];}); renderAll(); } };
 document.getElementById('printBtn').onclick=()=>window.print();
+document.getElementById('memoBox').addEventListener('input',e=>{ if(isReadOnly()){ renderMemo(); return; } const k=memoKey(); if(e.target.value.trim()) state.memo[k]=e.target.value; else delete state.memo[k]; save(); });
 document.getElementById('exportBtn').onclick=exportData;
 document.getElementById('importBtn').onclick=()=>document.getElementById('importFile').click();
 document.getElementById('importFile').onchange=e=>{ if(e.target.files[0]) importData(e.target.files[0]); e.target.value=''; };
