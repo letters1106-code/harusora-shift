@@ -247,7 +247,7 @@ try{ if(typeof firebase!=='undefined'){ firebase.initializeApp(firebaseConfig); 
 const DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const DOW_JP=['日','月','火','水','木','金','土'];
 const WORKDOW=['Mon','Tue','Wed','Thu','Fri','Sat'];
-const STATE_VER=5;
+const STATE_VER=6;
 const WD={ Mon:{open:true},Tue:{open:true},Wed:{open:true},Thu:{open:false},Fri:{open:true},Sat:{open:true},Sun:{open:false} };
 const SHIFT_JP={full:'終日',am:'AMのみ',pm:'PMのみ'};
 
@@ -257,11 +257,11 @@ function defaultState(){
     version:STATE_VER, y:now.getFullYear(), m:now.getMonth(),
     staff:[
       {id:'shimori', name:'下里', role:'正社員', shift:'full', color:'#7c3aed', days:['Mon','Tue','Wed','Fri','Sat'], min:null, max:null},
-      {id:'momose',  name:'百瀬', role:'バイト', shift:'full', color:'#ec4899', days:['Mon','Tue','Wed','Fri','Sat'], min:120, max:null},
+      {id:'momose',  name:'百瀬', role:'正社員', shift:'full', color:'#ec4899', days:['Mon','Tue','Wed','Fri','Sat'], min:null, max:null},
       {id:'omiya',   name:'大宮', role:'バイト', shift:'full', color:'#0d9488', days:['Mon','Tue','Wed','Fri','Sat'], min:80,  max:null},
       {id:'ishizuka',name:'石塚', role:'バイト', shift:'am',   color:'#d97706', days:['Mon','Tue','Wed','Fri','Sat'], min:null,max:45},
       {id:'shimatera',name:'嶋寺',role:'バイト', shift:'full', color:'#2563eb', days:['Mon','Tue','Wed','Fri','Sat'], min:null,max:45},
-      {id:'sakamoto',name:'阪本', role:'単発', shift:'pm', color:'#94a3b8', days:[], min:null, max:null},
+      {id:'sakamoto',name:'阪本', role:'単発', shift:'pm', color:'#84cc16', days:[], min:null, max:null},
     ],
     off:[],        // {staffId, y, mo, dy}（当月分のみ運用）
     irregular:[],  // {staffId, y, mo, dy, scope, pri:'high'|'low'}
@@ -276,7 +276,7 @@ let state=load();
 function load(){
   try{ const s=JSON.parse(localStorage.getItem('shiftAppState'));
     if(s&&s.version===STATE_VER){ normalizeState(s); return s; }
-    if(s&&s.version===4&&s.staff){ migrateV4toV5(s); normalizeState(s); return s; } // データを保持したまま色修正＋阪本追加
+    if(s&&s.staff){ if(s.version===4) migrateV4toV5(s); migrateTo6(s); normalizeState(s); return s; } // データを保持したまま移行
   }catch(e){}
   return defaultState();
 }
@@ -296,6 +296,13 @@ function migrateV4toV5(s){
   s.staff.forEach(st=>{ const f=fix[st.id]; if(f&&st.color===f[0]) st.color=f[1]; });
   if(!s.staff.some(st=>st.id==='sakamoto')) s.staff.push({id:'sakamoto',name:'阪本',role:'単発',shift:'pm',color:'#94a3b8',days:[],min:null,max:null});
   s.version=5;
+}
+function migrateTo6(s){ // 既存データにも新デフォルトを一度だけ反映：百瀬→正社員(下限上限なし)、阪本→黄緑
+  (s.staff||[]).forEach(st=>{
+    if(st.id==='momose' && st.role==='バイト'){ st.role='正社員'; st.min=null; st.max=null; }
+    if(st.id==='sakamoto' && st.color==='#94a3b8'){ st.color='#84cc16'; }
+  });
+  s.version=STATE_VER;
 }
 function save(){ localStorage.setItem('shiftAppState', JSON.stringify(state)); if(sync.on&&!sync.applying&&sync.mode==='edit') cloudPush(); }
 
@@ -329,8 +336,12 @@ function connectSync(viewPass, editPass){
       const editOk = storedHash ? (!!sync.pendingEditHash && sync.pendingEditHash===storedHash) : !!sync.pendingEditHash;
       sync.mode = editOk ? 'edit' : 'view';
       sync.editHash = editOk ? (storedHash||sync.pendingEditHash) : storedHash;
-      if(d.state && JSON.stringify(d.state)!==JSON.stringify(state)){
-        sync.applying=true; state=d.state; normalizeState(state); localStorage.setItem('shiftAppState',JSON.stringify(state)); renderAll(); sync.applying=false;
+      if(d.state){
+        const incoming=d.state, needMig=(incoming.version||0)<STATE_VER; if(needMig) migrateTo6(incoming);
+        if(JSON.stringify(incoming)!==JSON.stringify(state)){
+          sync.applying=true; state=incoming; normalizeState(state); localStorage.setItem('shiftAppState',JSON.stringify(state)); renderAll(); sync.applying=false;
+        }
+        if(needMig && editOk) cloudPush(true); // 旧データを新デフォルトへ移行し共有に反映
       }
       applyMode();
       if(editOk && !storedHash) cloudPush(true); // 未保護の部屋に編集権を確定
