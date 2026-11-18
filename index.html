@@ -546,7 +546,7 @@ function minToHHMM(mn){ const h=Math.floor(mn/60), m=mn%60; return String(h).pad
 // その人・その日の「通常の終了時刻（分）」。早上がり計算の基準。
 function normalEndMin(s,dow,rec){
   if(rec.open&&rec.hours&&rec.hours.end) return hhmmToMin(rec.hours.end);
-  if(dow==='Sat') return (rec.am||[]).includes(s.id)?(s.shift==='am'?hhmmToMin('12:30'):hhmmToMin('14:00')):0;
+  if(dow==='Sat') return (rec.am||[]).includes(s.id)?(s.shift==='am'?hhmmToMin('12:30'):hhmmToMin('13:45')):0;
   if(rec.fever&&rec.fever.includes(s.id)) return hhmmToMin('18:30');
   if((rec.pm||[]).includes(s.id)) return hhmmToMin(dow==='Tue'?'18:30':'17:00');
   if((rec.am||[]).includes(s.id)) return hhmmToMin('12:30');
@@ -570,7 +570,7 @@ function endTimeSelectHTML(s,dow,rec){
 function hoursForDay(s,dow,rec){
   let h=0;
   if(rec.open&&rec.hours&&rec.hours.start&&rec.hours.end){ h=rec.am.includes(s.id)?spanHours(rec.hours):0; } // 臨時営業の指定時間（通し）
-  else if(dow==='Sat'){ h=rec.am.includes(s.id)?(s.shift==='am'?3.75:5.25):0; }
+  else if(dow==='Sat'){ h=rec.am.includes(s.id)?(s.shift==='am'?3.75:5):0; }
   else { if(rec.am.includes(s.id))h+=3.75; if(rec.pm.includes(s.id))h+=slotHours(dow,'pm'); if(rec.fever&&rec.fever.includes(s.id))h+=1.5; }
   if(h>0){ const d=endOverrideDelta(s,dow,rec); if(d>0) h=Math.max(0,h-d); } // 早上がり反映
   return Math.round(h*100)/100;
@@ -610,7 +610,7 @@ function generate(){
 
     // 正社員割り当て（正社員も人数にカウント。半日の希望休は枠ごとに除外）
     shainsWorking.forEach(sh=>{
-      if(dow==='Sat'){ if(!blocksAM(sh.id,m,d)){ rec.am.push(sh.id); running[sh.id]+=5.25; } }
+      if(dow==='Sat'){ if(!blocksAM(sh.id,m,d)){ rec.am.push(sh.id); running[sh.id]+=5; } }
       else {
         if(!blocksAM(sh.id,m,d)){ rec.am.push(sh.id); running[sh.id]+=3.75; }
         if(!blocksPM(sh.id,m,d)){ rec.pm.push(sh.id); running[sh.id]+=slotHours(dow,'pm'); if(hasFever(dow)){ rec.fever.push(sh.id); running[sh.id]+=1.5; } }
@@ -619,7 +619,7 @@ function generate(){
 
     if(dow==='Sat'){
       const c=baito.filter(s=>availSat(s,y,m,d)).sort(ranker([],'sat',d));
-      for(const s of c){ if(rec.am.length>=amNeed)break; const hrs=s.shift==='am'?3.75:5.25; if(exceedMax(s,hrs))continue; rec.am.push(s.id); running[s.id]+=hrs; }
+      for(const s of c){ if(rec.am.length>=amNeed)break; const hrs=s.shift==='am'?3.75:5; if(exceedMax(s,hrs))continue; rec.am.push(s.id); running[s.id]+=hrs; }
       state.assign[key]=rec; continue;
     }
 
@@ -699,7 +699,7 @@ const staffIdx=id=>state.staff.findIndex(s=>s.id===id);
 // 各行をスタッフ順で左詰め（空欄なし・共通メンバーは自然に縦揃い）
 function dayGrid(rec,dow){
   const slots = isTempCustom(rec) ? [{k:'am',label:`${rec.hours.start}–${rec.hours.end}`}]
-    : dow==='Sat' ? [{k:'am',label:'土 8:45–14:00'}]
+    : dow==='Sat' ? [{k:'am',label:'土 8:45–13:45'}]
     : hasFever(dow) ? [{k:'am',label:'AM'},{k:'pm',label:'PM'},{k:'fever',label:'熱'}]
     : [{k:'am',label:'AM'},{k:'pm',label:dow==='Tue'?'PM~18:30':'PM'}];
   const grid=document.createElement('div');
@@ -767,13 +767,13 @@ function verifyHours(){
     });
     adj=Math.round(adj*100)/100;
     const tempH=temp.reduce((a,b)=>a+b.h,0);
-    const recalc=Math.round((am*3.75 + tuePm*4.75 + othPm*3.25 + fev*1.5 + satFull*5.25 + satAm*3.75 + tempH - adj)*100)/100;
+    const recalc=Math.round((am*3.75 + tuePm*4.75 + othPm*3.25 + fev*1.5 + satFull*5 + satAm*3.75 + tempH - adj)*100)/100;
     const parts=[];
     if(am) parts.push(`AM ${am}回×3.75`);
     if(tuePm) parts.push(`火PM ${tuePm}回×4.75`);
     if(othPm) parts.push(`PM ${othPm}回×3.25`);
     if(fev) parts.push(`発熱 ${fev}回×1.5`);
-    if(satFull) parts.push(`土通し ${satFull}回×5.25`);
+    if(satFull) parts.push(`土通し ${satFull}回×5`);
     if(satAm) parts.push(`土AM ${satAm}回×3.75`);
     temp.forEach(t=>parts.push(`臨時${t.d}日 ${fmtH(t.h)}`));
     if(adj>0) parts.push(`早上がり調整 −${fmtH(adj)}(${adjDays.sort((a,b)=>a-b).join('・')}日)`);
@@ -1032,7 +1032,7 @@ function openDay(d){
       const p=document.createElement('p'); p.innerHTML='この日は<b>休診</b>です'+(hol?`（祝日: ${hol}）`:manualClosed(m,d)?'（手動休診）':'')+'。'; body.appendChild(p);
     } else {
       const note=document.createElement('p'); note.className='hint';
-      note.textContent=dow==='Sat'?'土曜: 8:45–14:00（通し）':dow==='Tue'?'火曜: AM / PM診察 13:45–18:30（発熱外来なし）':'AM / PM診察 13:45–17:00 / 発熱外来 17:00–18:30';
+      note.textContent=dow==='Sat'?'土曜: 8:45–13:45（通し）':dow==='Tue'?'火曜: AM / PM診察 13:45–18:30（発熱外来なし）':'AM / PM診察 13:45–17:00 / 発熱外来 17:00–18:30';
       body.appendChild(note);
       const slots = isTempCustom(rec) ? [{k:'am',label:`${rec.hours.start}–${rec.hours.end}`}] : dow==='Sat' ? [{k:'am',label:'終日'}] : hasFever(dow) ? [{k:'am',label:'AM'},{k:'pm',label:'PM'},{k:'fever',label:'発熱'}] : [{k:'am',label:'AM'},{k:'pm',label:'PM'}];
       slots.forEach(sl=>{
@@ -1060,7 +1060,7 @@ function openDay(d){
   const single=(dow==='Sat'||isTemp); // 通し1枠で扱う日
 
   const note=document.createElement('p'); note.className='hint';
-  note.textContent=isTemp?'臨時営業日: 下の「営業時間」を設定すると、その時間が通しで実働に加算されます。':dow==='Sat'?'土曜: 8:45–14:00（通し）':dow==='Tue'?'火曜: AM / PM診察 13:45–18:30（発熱外来なし）':'AM / PM診察 13:45–17:00 / 発熱外来 17:00–18:30';
+  note.textContent=isTemp?'臨時営業日: 下の「営業時間」を設定すると、その時間が通しで実働に加算されます。':dow==='Sat'?'土曜: 8:45–13:45（通し）':dow==='Tue'?'火曜: AM / PM診察 13:45–18:30（発熱外来なし）':'AM / PM診察 13:45–17:00 / 発熱外来 17:00–18:30';
   body.appendChild(note);
 
   // 臨時営業の営業時間（開始〜終了）
